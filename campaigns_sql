@@ -1,0 +1,146 @@
+-- SQL for data file
+-- This will return aggregate information for all users who joined the email list between 2013-01-01 and 2016-03-31, 
+-- grouped by the campaign that the user joined on. It returns: 
+--    fields related to the joining campaign: page id, name, date created, type, and count of users joined
+--    aggregates about the users: region, language, whether they orginally joined from Facebook
+--    aggregates about performance on the welcome sequence: opens, clicks, actions
+--    aggregates about performance in the first 14 days: opens, clicks, actions, donations, amt donations, recurrrings, amt recurring
+--    what we are trying to predict: aggregates about performance in the first 90 days: actions, donations, amt. donations
+
+SELECT page_id, name, page_created, page_type, COUNT(*), SUM(fb) as fb, -- SUM(subbed_after_14) as subbed_after_14, 
+       SUM(welcome_opens) as wel_opens, SUM(welcome_clicks) as wel_clicks, SUM(welcome_actions) as wel_acts,          
+       SUM(opens_14day) as opens_14day, SUM(clicks_14day) as clicks_14day, SUM(actions_14day) as acts_14day,
+       SUM(num_donations_14day) as num_donations_14day, SUM(amt_donations_14day) as amt_donations_14day,
+       SUM(num_recurring_14day) as num_recur_14day, SUM(amt_recurring_14day) as amt_recur_14day,
+       SUM(IF(region="United States",1,0)) as usa,
+       SUM(IF(region="Canada",1,0)) as can,
+       SUM(IF(region="United Kingdom",1,0)) as uk,
+       SUM(IF(region="Australia",1,0)) as aus,
+       SUM(IF(region="New Zealand",1,0)) as nz,
+       SUM(IF(region="NUK Europe",1,0)) as nuk_eur,
+       SUM(IF(region="Rest of World",1,0)) as "RoW",
+       SUM(IF(lang_id=100,1,0)) as en,
+       SUM(IF(lang_id=101,1,0)) as de,
+       SUM(IF(lang_id=103,1,0)) as fr,
+       SUM(actions_90day) as acts_90day,
+       SUM(num_donations_90day) as num_donations_90day, SUM(amt_donations_90day) as amt_donations_90day
+FROM
+(SELECT DISTINCT u.id, joined.page_id, joined.page_created, joined.page_type, joined.name, u.created_at, 
+       (CASE 
+          WHEN s.value IS NOT NULL AND s.value <> 'fb' THEN 0 
+          WHEN s.value IS NULL OR s.value ='fb' THEN 1 
+        END) AS fb,
+       welcome_opens, welcome_clicks, welcome_actions,
+       opens_14day, clicks_14day, actions_14day, 
+       num_donations_14day, amt_donations_14day, num_recurring_14day, amt_recurring_14day,
+       actions_90day, num_donations_90day, amt_donations_90day,
+      CASE WHEN country = 'United States' THEN 'United States'
+        WHEN country = 'United Kingdom' THEN 'United Kingdom'
+        WHEN country = 'Australia' THEN 'Australia'
+        WHEN country = 'Canada' THEN 'Canada'
+        WHEN country = 'New Zealand' THEN 'New Zealand'
+        WHEN country IN ('Germany' , 'Denmark', 'Norway', 'Sweden', 'Austria', 'Belgium', 'Czech Republic', 'Denmark',    'Finland','Estonia', 'Lithuania', 'Latvia', 'Slovakia', 'Ukraine', 'Croatia', 'Serbia','Montenegro','Bosnia AND Herzegovina', 'Macedonia', 'Albania', 'Andorra', 'Luxembourg', 'Cyprus', 'Belarus','Moldova','Bulgaria','France', 'Greece', 'Hungary', 'Iceland', 'Ireland', 'Italy', 'Malta', 'Netherlands', 'Poland', 'Portugal', 'Romania', 'Slovenia', 'Spain', 'Switzerland', 'Russia', 'Turkey') THEN 'NUK Europe'
+     ELSE 'Rest of World'
+    END AS region,
+    u.lang_id as lang_id
+FROM core_user as u
+JOIN 
+   (SELECT a.user_id, a.page_id, p.name, p.created_at as page_created, p.type as page_type
+    FROM core_action as a
+    JOIN core_page as p on a.page_id = p.id
+    WHERE a.created_user = 1
+    AND p.id not in (5,25,28,46,130,525,561,566,761,935,1304,1394,1862,2678,3712,8559,10668) -- excludes special pages
+    AND LEFT(p.name,12) <> "controlshift"
+   ) as joined on joined.user_id = u.id 
+LEFT JOIN 
+   (SELECT a.user_id, af.value
+   FROM core_action as a
+   JOIN core_actionfield as af on a.id = af.parent_id AND af.name = "sub"
+   WHERE created_user = 1
+   ) as s on s.user_id = u.id -- sub code
+LEFT JOIN -- welcome opens
+  (SELECT u.id, COUNT(distinct mail.id) as welcome_opens
+   FROM core_user as u
+   JOIN core_open as o on u.id = o.user_id
+   JOIN core_mailing as mail on mail.id = o.mailing_id
+   WHERE mail.recurring_schedule_id IS NOT NULL
+   AND o.created_at < dateadd(day,7,u.created_at)
+   GROUP BY u.id
+  ) as opens on u.id = opens.id
+LEFT JOIN -- welcome clicks
+  (SELECT u.id, COUNT(distinct mail.id) as welcome_clicks
+   FROM core_user as u
+   JOIN core_click as c on u.id = c.user_id
+   JOIN core_mailing as mail on mail.id = c.mailing_id
+   WHERE mail.recurring_schedule_id IS NOT NULL
+   AND c.created_at < dateadd(day,7,u.created_at)
+   GROUP BY u.id
+  ) as clicks on u.id = clicks.id
+LEFT JOIN -- welcome actions
+  (SELECT u.id, COUNT(distinct mail.id) as welcome_actions
+   FROM core_user as u
+   JOIN core_action as a on u.id = a.user_id
+   JOIN core_mailing as mail on mail.id = a.mailing_id
+   WHERE mail.recurring_schedule_id IS NOT NULL
+   AND a.created_at < dateadd(day,7,u.created_at)
+   GROUP BY u.id
+  ) as acts on u.id = acts.id
+LEFT JOIN -- total opens at 14 days
+  (SELECT u.id, COUNT(distinct mail.id) as opens_14day
+   FROM core_user as u
+   JOIN core_open as o on u.id = o.user_id
+   JOIN core_mailing as mail on mail.id = o.mailing_id
+   WHERE o.created_at < dateadd(day,14,u.created_at)
+   GROUP BY u.id
+  ) as opens_14 on u.id = opens_14.id
+LEFT JOIN -- total clicks at 14 days
+  (SELECT u.id, COUNT(distinct mail.id) as clicks_14day
+   FROM core_user as u
+   JOIN core_click as c on u.id = c.user_id
+   JOIN core_mailing as mail on mail.id = c.mailing_id
+   WHERE c.created_at < dateadd(day,14,u.created_at)
+   GROUP BY u.id
+  ) as clicks_14 on u.id = clicks_14.id
+LEFT JOIN -- total actions at 14 days
+  (SELECT u.id, COUNT(distinct mail.id) as actions_14day
+   FROM core_user as u
+   JOIN core_action as a on u.id = a.user_id
+   JOIN core_mailing as mail on mail.id = a.mailing_id
+   WHERE a.created_at < dateadd(day,14,u.created_at)
+   GROUP BY u.id
+  ) as acts_14 on u.id = acts_14.id
+LEFT JOIN -- donations at 14 days
+  (SELECT u.id, COUNT(o.id) as num_donations_14day, SUM(total_converted) as amt_donations_14day
+   FROM core_user as u
+   JOIN core_order as o on u.id = o.user_id
+   WHERE o.created_at < dateadd(day,14,u.created_at)
+   GROUP BY u.id
+  ) as donate_14 on u.id = donate_14.id
+LEFT JOIN -- recurring donations at 14 days
+  (SELECT u.id, COUNT(re.id) as num_recurring_14day, SUM(amount_converted) as amt_recurring_14day
+   FROM core_user as u
+   JOIN core_orderrecurring as re on u.id = re.user_id
+   WHERE re.created_at < dateadd(day,14,u.created_at)
+   GROUP BY u.id
+  ) as recur_14 on u.id = recur_14.id
+LEFT JOIN -- non-welcome actions at 90 days
+  (SELECT u.id, COUNT(distinct mail.id) as actions_90day
+   FROM core_user as u
+   JOIN core_action as a on u.id = a.user_id
+   JOIN core_mailing as mail on mail.id = a.mailing_id
+   WHERE mail.recurring_schedule_id IS NULL
+   AND a.created_at < dateadd(day,90,u.created_at)
+   GROUP BY u.id
+  ) as acts_90 on u.id = acts_90.id
+LEFT JOIN -- donations at 90 days
+  (SELECT u.id, COUNT(o.id) as num_donations_90day, SUM(total_converted) as amt_donations_90day
+   FROM core_user as u
+   JOIN core_order as o on u.id = o.user_id
+   WHERE o.created_at < dateadd(day,90,u.created_at)
+   GROUP BY u.id
+  ) as donate_90 on u.id = donate_90.id
+ WHERE u.created_at BETWEEN "2013-01-01" AND "2016-03-31"
+) as joiners
+GROUP BY 1,2,3,4
+HAVING COUNT(*) >50
+ORDER BY 3 desc
